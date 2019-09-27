@@ -118,6 +118,7 @@ void RefineGravity(map<double, ImageFrame> &all_image_frame, Vector3d &g, Vector
             VectorXd dg = x.segment<2>(n_state - 3);
             g0 = (g0 + lxly * dg).normalized() * G.norm();
             //double s = x(n_state - 1);
+
     }   
     g = g0;
 }
