@@ -156,6 +156,9 @@ private:
     /// DL 算法中用于判断 Lambda 在上次迭代中是否可以，以及Lambda怎么缩放
     bool IsGoodStepInDL();
 
+    ///DL 算法中用于更新置信半径
+    bool UpdateRadius(double rho);
+
     /// PCG 迭代线性求解器
     VecX PCGSolver(const MatXX &A, const VecX &b, int maxIter);
 
