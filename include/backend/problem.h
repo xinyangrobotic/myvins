@@ -140,6 +140,11 @@ private:
     /// Levenberg
     /// 计算LM算法的初始Lambda
     void ComputeLambdaInitLM();
+    ///计算DL算法的初始状态
+    void ComputeLambdaInitDL();
+
+    ///计算delta_sd
+    void ComputeDeltaSd();
 
     /// Hessian 对角线加上或者减去  Lambda
     void AddLambdatoHessianLM();
@@ -148,6 +153,8 @@ private:
 
     /// LM 算法中用于判断 Lambda 在上次迭代中是否可以，以及Lambda怎么缩放
     bool IsGoodStepInLM();
+    /// DL 算法中用于判断 Lambda 在上次迭代中是否可以，以及Lambda怎么缩放
+    bool IsGoodStepInDL();
 
     /// PCG 迭代线性求解器
     VecX PCGSolver(const MatXX &A, const VecX &b, int maxIter);
@@ -155,7 +162,11 @@ private:
     double currentLambda_;
     double currentChi_;
     double stopThresholdLM_;    // LM 迭代退出阈值条件
+    double stopThresholdDL_;
     double ni_;                 //控制 Lambda 缩放大小
+    double delta_circle_;
+    bool GNcomputed_;
+    double epsilon1_, epsilon2_;
 
     ProblemType problemType_;
 
@@ -181,6 +192,11 @@ private:
     VecX b_pp_;
     MatXX H_ll_;
     VecX b_ll_;
+
+    //DegLeg' Parameter
+    VecX delta_sd_;
+    VecX delta_gn_;
+    VecX delta_dl_;
 
     /// all vertices
     HashVertex verticies_;
