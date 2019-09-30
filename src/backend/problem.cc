@@ -4,6 +4,7 @@
 #include <iomanip>
 #include "backend/problem.h"
 #include "utility/tic_toc.h"
+#define USE_DOGLEG
 
 #ifdef USE_OPENMP
 
@@ -180,7 +181,7 @@ bool Problem::Solve(int iterations) {
     // 遍历edge, 构建 H 矩阵
     MakeHessian();
     // LM 初始化
-    ComputeLambdaInitDL();
+    ComputeLambdaInitLM();
     // LM 算法迭代求解
     bool stop = false;
     int iter = 0;
@@ -189,8 +190,8 @@ bool Problem::Solve(int iterations) {
         std::cout << "iter: " << iter << " , chi= " << currentChi_ << " , Lambda= " << currentLambda_ << std::endl;
         bool oneStepSuccess = false;
         int false_cnt = 0;
+        delta_sd_ = b_.squaredNorm()/(b_.transpose() * Hessian_ * b_) * b_;
         GNcomputed_ = false;
-        ComputeDeltaSd();
         while (!oneStepSuccess && false_cnt < 10)  // 不断尝试 Lambda, 直到成功迭代一步
         {
             // setLambda
@@ -208,10 +209,23 @@ bool Problem::Solve(int iterations) {
 //                stop = true;
 //                break;
 //            }
+#ifdef USE_DOGLEG
+double true_decent = 0;
+if(delta_x_.norm() <= delta_circle_){
+    true_decent += currentChi_;
+} else{
+    if(delta_sd_.norm() >= delta_circle_){
+        delta_x_ = delta_circle_/delta_sd_.norm() * delta_sd_;
+        true_decent = 2 * b_.dot(delta_x_) - delta_x_.transpose() * Hessian_ * delta_x_;
+    } else{
+
+    }
+}
+#endif
             // 更新状态量
             UpdateStates();
             // 判断当前步是否可行以及 LM 的 lambda 怎么更新, chi2 也计算一下
-            oneStepSuccess = IsGoodStepInDL();
+            oneStepSuccess = IsGoodStepInLM();
             // 后续处理，
             if (oneStepSuccess) {
 //                std::cout << " get one step success\n";
@@ -394,66 +408,66 @@ void Problem::MakeHessian() {
  */
 void Problem::SolveLinearSystem() {
 
-    if(abs(delta_sd_.norm() >= delta_circle_)) {
-        delta_x_ = delta_circle_ / delta_sd_.norm() * delta_sd_;
+    if (problemType_ == ProblemType::GENERIC_PROBLEM) {
+        // PCG solver
+        MatXX H = Hessian_;
+#ifndef USE_DOGLEG
+        for (size_t i = 0; i < Hessian_.cols(); ++i) {
+            H(i, i) += currentLambda_;
+        }
+#endif
+        // delta_x_ = PCGSolver(H, b_, H.rows() * 2);
+        delta_x_ = H.ldlt().solve(b_);
 
-    }
-    else{
-        if(!GNcomputed_){
-//            int reserve_size = ordering_poses_;
-//            int marg_size = ordering_landmarks_;
-//            MatXX Hmm = Hessian_.block(reserve_size, reserve_size, marg_size, marg_size);
-//            MatXX Hpm = Hessian_.block(0, reserve_size, reserve_size, marg_size);
-//            MatXX Hmp = Hessian_.block(reserve_size, 0, marg_size, reserve_size);
-//            VecX bpp = b_.segment(0, reserve_size);
-//            VecX bmm = b_.segment(reserve_size, marg_size);
-//
-//            // Hmm 是对角线矩阵，它的求逆可以直接为对角线块分别求逆，如果是逆深度，对角线块为1维的，则直接为对角线的倒数，这里可以加速
-//            MatXX Hmm_inv(MatXX::Zero(marg_size, marg_size));
-//            // TODO:: use openMP
-//            for (auto landmarkVertex : idx_landmark_vertices_) {
-//                int idx = landmarkVertex.second->OrderingId() - reserve_size;
-//                int size = landmarkVertex.second->LocalDimension();
-//                Hmm_inv.block(idx, idx, size, size) = Hmm.block(idx, idx, size, size).inverse();
-//            }
-//
-//            MatXX tempH = Hpm * Hmm_inv;
-//            H_pp_schur_ = Hessian_.block(0, 0, ordering_poses_, ordering_poses_) - tempH * Hmp;
-//            b_pp_schur_ = bpp - tempH * bmm;
-//
-//            // step2: solve Hpp * delta_x = bpp
-//            VecX delta_x_pp(VecX::Zero(reserve_size));
-//
-//            for (ulong i = 0; i < ordering_poses_; ++i) {
-//                H_pp_schur_(i, i) += currentLambda_;              // LM Method
-//            }
-//
-//            // TicToc t_linearsolver;
-//            delta_x_pp =  H_pp_schur_.ldlt().solve(b_pp_schur_);//  SVec.asDiagonal() * svd.matrixV() * Ub;
-//            delta_gn_.head(reserve_size) = delta_x_pp;
-//            // std::cout << " Linear Solver Time Cost: " << t_linearsolver.toc() << std::endl;
-//
-//            // step3: solve Hmm * delta_x = bmm - Hmp * delta_x_pp;
-//            VecX delta_x_ll(marg_size);
-//            delta_x_ll = Hmm_inv * (bmm - Hmp * delta_x_pp);
-//            delta_gn_.tail(marg_size) = delta_x_ll;
-            delta_gn_ = Hessian_.ldlt().solve(b_);
-            GNcomputed_ = true;
+    } else {
+
+//        TicToc t_Hmminv;
+        // step1: schur marginalization --> Hpp, bpp
+        int reserve_size = ordering_poses_;
+        int marg_size = ordering_landmarks_;
+        MatXX Hmm = Hessian_.block(reserve_size, reserve_size, marg_size, marg_size);
+        MatXX Hpm = Hessian_.block(0, reserve_size, reserve_size, marg_size);
+        MatXX Hmp = Hessian_.block(reserve_size, 0, marg_size, reserve_size);
+        VecX bpp = b_.segment(0, reserve_size);
+        VecX bmm = b_.segment(reserve_size, marg_size);
+
+        // Hmm 是对角线矩阵，它的求逆可以直接为对角线块分别求逆，如果是逆深度，对角线块为1维的，则直接为对角线的倒数，这里可以加速
+        MatXX Hmm_inv(MatXX::Zero(marg_size, marg_size));
+        // TODO:: use openMP
+        for (auto landmarkVertex : idx_landmark_vertices_) {
+            int idx = landmarkVertex.second->OrderingId() - reserve_size;
+            int size = landmarkVertex.second->LocalDimension();
+            Hmm_inv.block(idx, idx, size, size) = Hmm.block(idx, idx, size, size).inverse();
         }
-        if(delta_gn_.norm() <= delta_circle_)
-            delta_x_ = delta_gn_;
-        else{
-            double a1 = (delta_gn_ - delta_sd_).squaredNorm();
-            double b1 = 2 * delta_sd_.dot(delta_gn_ - delta_sd_);
-            double c1 = delta_sd_.squaredNorm() - delta_circle_* delta_circle_;
-            double beta = (sqrt(b1*b1 - 4*a1*c1) - b1)/(2*a1);
-            delta_x_ = delta_sd_ + beta *(delta_gn_ - delta_sd_);
+
+        MatXX tempH = Hpm * Hmm_inv;
+        H_pp_schur_ = Hessian_.block(0, 0, ordering_poses_, ordering_poses_) - tempH * Hmp;
+        b_pp_schur_ = bpp - tempH * bmm;
+
+        // step2: solve Hpp * delta_x = bpp
+        VecX delta_x_pp(VecX::Zero(reserve_size));
+#ifndef USE_DOGLEG
+        for (ulong i = 0; i < ordering_poses_; ++i) {
+            H_pp_schur_(i, i) += currentLambda_;              // LM Method
         }
+#endif
+        // TicToc t_linearsolver;
+        delta_x_pp =  H_pp_schur_.ldlt().solve(b_pp_schur_);//  SVec.asDiagonal() * svd.matrixV() * Ub;
+        delta_x_.head(reserve_size) = delta_x_pp;
+        // std::cout << " Linear Solver Time Cost: " << t_linearsolver.toc() << std::endl;
+
+        // step3: solve Hmm * delta_x = bmm - Hmp * delta_x_pp;
+        VecX delta_x_ll(marg_size);
+        delta_x_ll = Hmm_inv * (bmm - Hmp * delta_x_pp);
+        delta_x_.tail(marg_size) = delta_x_ll;
+
+//        std::cout << "schur time cost: "<< t_Hmminv.toc()<<std::endl;
     }
 
 }
 
 void Problem::UpdateStates() {
+
     // update vertex
     for (auto vertex: verticies_) {
         vertex.second->BackUpParameters();    // 保存上次的估计值
@@ -463,6 +477,7 @@ void Problem::UpdateStates() {
         VecX delta = delta_x_.segment(idx, dim);
         vertex.second->Plus(delta);
     }
+
     // update prior
     if (err_prior_.rows() > 0) {
         // BACK UP b_prior_
@@ -496,10 +511,14 @@ void Problem::RollbackStates() {
 
 /// LM
 void Problem::ComputeLambdaInitLM() {
-    ni_ = 2.;
-    currentLambda_ = -1.;
+#ifdef USE_DOGLEG
+delta_circle_ =1e4;
+currentLambda_ = 100;
+#else
+ni_ = 2.;
+currentLambda_ = -1.;
+#endif
     currentChi_ = 0.0;
-
     for (auto edge: edges_) {
         currentChi_ += edge.second->RobustChi2();
     }
@@ -508,7 +527,7 @@ void Problem::ComputeLambdaInitLM() {
     currentChi_ *= 0.5;
 
     stopThresholdLM_ = 1e-10 * currentChi_;          // 迭代条件为 误差下降 1e-6 倍
-
+#ifndef USE_DOGLEG
     double maxDiagonal = 0;
     ulong size = Hessian_.cols();
     assert(Hessian_.rows() == Hessian_.cols() && "Hessian is not square");
@@ -519,10 +538,9 @@ void Problem::ComputeLambdaInitLM() {
     maxDiagonal = std::min(5e10, maxDiagonal);
     double tau = 1e-5;  // 1e-5
     currentLambda_ = tau * maxDiagonal;
+#endif
 //        std::cout << "currentLamba_: "<<maxDiagonal<<" "<<currentLambda_<<std::endl;
 }
-
-
 
 /// LM
     void Problem::ComputeLambdaInitDL() {
@@ -549,17 +567,8 @@ void Problem::ComputeLambdaInitLM() {
         maxDiagonal = std::min(5e10, maxDiagonal);
         double tau = 1e-5;  // 1e-5
         currentLambda_ = tau * maxDiagonal;
-
-        delta_circle_ = 1.0;
 //        std::cout << "currentLamba_: "<<maxDiagonal<<" "<<currentLambda_<<std::endl;
-        epsilon1_ = 1e-12, epsilon2_ = 1e-12;
-}
-
-    void Problem::ComputeDeltaSd() {
-    delta_sd_ = b_.squaredNorm()/(b_.transpose() * Hessian_ * b_) * b_;
-
-}
-
+    }
 void Problem::AddLambdatoHessianLM() {
     ulong size = Hessian_.cols();
     assert(Hessian_.rows() == Hessian_.cols() && "Hessian is not square");
@@ -613,6 +622,8 @@ bool Problem::IsGoodStepInLM() {
 
 bool Problem::IsGoodStepInDL() {
         double scale = 0;
+//    scale = 0.5 * delta_x_.transpose() * (currentLambda_ * delta_x_ + b_);
+//    scale += 1e-3;    // make sure it's non-zero :)
         scale = 0.5* delta_x_.transpose() * (currentLambda_ * delta_x_ + b_);
         scale += 1e-6;    // make sure it's non-zero :)
 
@@ -626,23 +637,22 @@ bool Problem::IsGoodStepInDL() {
             tempChi += err_prior_.squaredNorm();
         tempChi *= 0.5;          // 1/2 * err^2
 
-        double rho = (currentChi_ - tempChi) / (2*currentChi_ - (2*(currentChi_ - b_.transpose() * delta_x_ + 0.5 * delta_x_.transpose() * Hessian_ * delta_x_)));
-        if (rho > 0 && isfinite(tempChi)) {   // last step was good, 误差在下降
-            UpdateRadius(rho);
+        double rho = (currentChi_ - tempChi) / scale;
+        if (rho > 0 && isfinite(tempChi))   // last step was good, 误差在下降
+        {
+            double alpha = 1. - pow((2 * rho - 1), 3);
+            alpha = std::min(alpha, 2. / 3.);
+            double scaleFactor = (std::max)(1. / 3., alpha);
+            currentLambda_ *= scaleFactor;
+            ni_ = 2;
+            currentChi_ = tempChi;
             return true;
+        } else {
+            currentLambda_ *= ni_;
+            ni_ *= 2;
+            return false;
         }
-        UpdateRadius(rho);
-        return false;
-}
-bool Problem::UpdateRadius(double rho) {
-    if(rho > 0.75) {
-        delta_circle_ = min(2 * delta_circle_, 10000.);
-    } else if(rho >= 0.25 && rho <= 0.75){
-
-    } else{
-        delta_circle_ = sqrt(abs(delta_x_.transpose() * delta_x_)) * 0.25;
     }
-}
 
 /** @brief conjugate gradient with perconditioning
  *

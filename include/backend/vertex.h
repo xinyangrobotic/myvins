@@ -49,6 +49,8 @@ public:
     /// 默认是向量加
     virtual void Plus(const VecX &delta);
 
+    VecX GetX_p();
+
     /// 返回顶点的名称，在子类中实现
     virtual std::string TypeInfo() const = 0;
 

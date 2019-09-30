@@ -29,5 +29,9 @@ void Vertex::Plus(const VecX &delta) {
     parameters_ += delta;
 }
 
+VecX Vertex::GetX_p(){
+    return parameters_;
+}
+
 }
 }
