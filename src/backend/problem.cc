@@ -210,22 +210,71 @@ bool Problem::Solve(int iterations) {
 //                break;
 //            }
 #ifdef USE_DOGLEG
-double true_decent = 0;
+//double true_decent = 0;
+double alpha = 0, beta = 0, true_decent = 1e-6;
 if(delta_x_.norm() <= delta_circle_){
     true_decent += currentChi_;
 } else{
+    double h_sd_norm = b_.norm();
     if(delta_sd_.norm() >= delta_circle_){
         delta_x_ = delta_circle_/delta_sd_.norm() * delta_sd_;
         true_decent = 2 * b_.dot(delta_x_) - delta_x_.transpose() * Hessian_ * delta_x_;
     } else{
+//        double a1 = (delta_x_ - delta_sd_).squaredNorm();
+//        double b1 = 2 * delta_sd_.dot(delta_x_ - delta_sd_);
+//        double c1 = delta_sd_.squaredNorm() - delta_circle_ * delta_circle_;
+//        double beta = (sqrt(b1 * b1 - 4 * a1 * c1) - b1) / (2 * a1);
+//        cout << "beta: \n" << beta << endl;
+//        delta_x_ = delta_sd_ + beta * (delta_x_ - delta_sd_);
+        VecX a = alpha * b_;
+        double c = a.dot(delta_x_ - a);
+        double b_a_square_norm = (delta_x_ - a).squaredNorm();
+        double delta_a_square_sub = delta_circle_ * delta_circle_ - a.squaredNorm();
+        double tmp = sqrt(c * c +  b_a_square_norm * delta_a_square_sub);
+        if(c <= 0)
+            beta = (tmp - c) / b_a_square_norm;
+        else
+            beta = delta_a_square_sub / (tmp + c);
 
+        delta_x_ = a + beta * (delta_x_ - a);
+        true_decent += 0.5 * (1.0 - beta) * (1.0 - beta) * h_sd_norm * h_sd_norm  + \
+                                beta * (2.0 - beta) * currentChi_;
     }
 }
 #endif
             // 更新状态量
             UpdateStates();
+#ifdef USE_DOGLEG
+            double tempChi = 0.0;
+            for (auto edge: edges_) {
+                edge.second->ComputeResidual();
+                tempChi += edge.second->RobustChi2();
+            }
+            if (err_prior_.size() > 0)
+                tempChi += err_prior_.squaredNorm();
+            tempChi *= 0.5;          // 1/2 * err^2
+            double rho;
+            rho = tempChi / true_decent;
+            if (rho > 0.75) {
+                delta_circle_ = max(delta_circle_, 3 * delta_x_.norm());
+            } else if (rho >= 0.25 && rho <= 0.75) {
+
+            } else {
+                delta_circle_ = 0.5 * delta_circle_;
+            }
+
+            if(rho > 0){
+                oneStepSuccess = true;
+                currentChi_ = tempChi;
+            }else
+            {
+                ++false_cnt;
+                RollbackStates();
+            }
             // 判断当前步是否可行以及 LM 的 lambda 怎么更新, chi2 也计算一下
-            oneStepSuccess = IsGoodStepInLM();
+#else
+                oneStepSuccess = IsGoodStepInLM();
+
             // 后续处理，
             if (oneStepSuccess) {
 //                std::cout << " get one step success\n";
@@ -244,6 +293,7 @@ if(delta_x_.norm() <= delta_circle_){
                 false_cnt ++;
                 RollbackStates();   // 误差没下降，回滚
             }
+#endif
         }
         iter++;
 
@@ -512,7 +562,7 @@ void Problem::RollbackStates() {
 /// LM
 void Problem::ComputeLambdaInitLM() {
 #ifdef USE_DOGLEG
-delta_circle_ =1e4;
+delta_circle_ =1;
 currentLambda_ = 100;
 #else
 ni_ = 2.;
